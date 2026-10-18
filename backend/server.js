@@ -15,6 +15,7 @@ const timerRoutes = require('./src/modules/timer/timer.routes');
 const calendarRoutes = require('./src/modules/calendar/calendar.routes');
 const schedulingRoutes = require('./src/modules/scheduling/scheduling.routes');
 const { teamsRouter, invitationsRouter, projectsRouter } = require('./src/modules/teams/teams.routes');
+const goalsRoutes = require('./src/modules/goals/goals.routes');
 const { errorHandler } = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -100,6 +101,7 @@ app.use('/api/v1/scheduling', schedulingRoutes);
 app.use('/api/v1/teams', teamsRouter);
 app.use('/api/v1/invitations', invitationsRouter);
 app.use('/api/v1/projects', projectsRouter);
+app.use('/api/v1/goals', goalsRoutes);
 
 // Centralized error handler
 app.use(errorHandler);
