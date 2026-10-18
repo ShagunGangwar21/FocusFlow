@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+:root {
+  --bg-app: #f5f5f0;
+  --bg-card: #ffffff;
+  --bg-card-hover: #ebebe6;
+  --bg-sidebar: #ededed;
+  --bg-subtle: #eaeaea;
+  --border-subtle: #e5e7eb;
+  --border-focus: #f5c84c;
+  --text-main: #111827;
+  --text-muted: #6b7280;
+  --text-dim: #9ca3af;
+  --accent: #f5c84c;
+  --accent-hover: #e0b33b;
+  --accent-text: #0b111b;
+  --status-success: #10b981;
+  --status-warning: #f59e0b;
+  --status-danger: #ef4444;
+  --badge-fixed-bg: #fee2e2;
+  --badge-fixed-text: #991b1b;
+  --badge-flex-bg: #e0f2fe;
+  --badge-flex-text: #075985;
+}
+
+.dark {
+  --bg-app: #0b111b;
+  --bg-card: #151f2d;
+  --bg-card-hover: #1b2738;
+  --bg-sidebar: #0f1724;
+  --bg-subtle: #131c2a;
+  --border-subtle: #223348;
+  --border-focus: #f5c84c;
+  --text-main: #f3f4f6;
+  --text-muted: #9ca3af;
+  --text-dim: #6b7280;
+  --accent: #f5c84c;
+  --accent-hover: #e0b33b;
+  --accent-text: #0b111b;
+  --status-success: #10b981;
+  --status-warning: #f59e0b;
+  --status-danger: #ef4444;
+  --badge-fixed-bg: rgba(239, 68, 68, 0.15);
+  --badge-fixed-text: #fca5a5;
+  --badge-flex-bg: rgba(56, 189, 248, 0.15);
+  --badge-flex-text: #7dd3fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  min-height: 100vh;
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  overflow-x: hidden;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
