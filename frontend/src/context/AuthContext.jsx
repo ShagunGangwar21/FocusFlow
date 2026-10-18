@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import {
   fetchCurrentUser,
   loginUser,
@@ -45,7 +45,7 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  const login = async (email, password) => {
+  const login = useCallback(async (email, password) => {
     setError(null);
     try {
       const loggedInUser = await loginUser({ email, password });
@@ -55,9 +55,9 @@ export function AuthProvider({ children }) {
       setError(err.message || 'Login failed. Please check your credentials.');
       throw err;
     }
-  };
+  }, []);
 
-  const register = async (name, email, password, timezone) => {
+  const register = useCallback(async (name, email, password, timezone) => {
     setError(null);
     try {
       const newUser = await registerUser({ name, email, password, timezone });
@@ -67,9 +67,9 @@ export function AuthProvider({ children }) {
       setError(err.message || 'Registration failed. Please check your inputs.');
       throw err;
     }
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     try {
       await logoutUser();
     } catch (err) {
@@ -78,17 +78,19 @@ export function AuthProvider({ children }) {
       setUser(null);
       setError(null);
     }
-  };
+  }, []);
 
-  const value = {
+  const clearError = useCallback(() => setError(null), []);
+
+  const value = useMemo(() => ({
     user,
     isLoading,
     error,
     login,
     register,
     logout,
-    clearError: () => setError(null),
-  };
+    clearError,
+  }), [user, isLoading, error, login, register, logout, clearError]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

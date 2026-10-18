@@ -137,7 +137,11 @@ export default function UpcomingTasks({
       {/* Error State Banner */}
       {error && (
         <div className="my-4 p-3.5 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-500 dark:text-red-400 flex items-center justify-between gap-3">
-          <span>Failed to load tasks: {error.message || error}</span>
+          <span>
+            {error.status === 429 || error.code === 'TOO_MANY_REQUESTS' || String(error.message || error).includes('429')
+              ? (error.message && !error.message.includes('429') ? error.message : 'System busy or rate limit reached. Please wait a moment.')
+              : `Failed to load tasks: ${error.message || error}`}
+          </span>
           {onRetry && (
             <button
               type="button"

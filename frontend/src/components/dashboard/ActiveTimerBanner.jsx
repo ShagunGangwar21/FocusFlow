@@ -15,6 +15,7 @@ export default function ActiveTimerBanner({
   isPaused = false,
   isMutating = false,
   errorMessage = null,
+  onClearError,
   onTogglePause,
   onFinishSession,
   onDiscardSession,
@@ -53,11 +54,11 @@ export default function ActiveTimerBanner({
               </span>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-[11px] font-mono font-semibold text-[var(--accent)]">
-                  {currentFormatted}
+                  {totalFormatted}
                 </span>
                 {accumulatedSeconds > 0 && (
                   <span className="text-[10px] font-mono font-medium text-[var(--text-muted)]">
-                    (Total: {totalFormatted})
+                    (Session: {currentFormatted})
                   </span>
                 )}
                 <span className="text-[10px] text-[var(--text-dim)]">
@@ -113,8 +114,19 @@ export default function ActiveTimerBanner({
 
         {/* Optional Transient Error */}
         {errorMessage && (
-          <div className="mt-2 text-[10px] text-red-400 bg-red-500/10 p-1.5 rounded-md">
-            {errorMessage}
+          <div className="mt-2 text-[10px] text-red-400 bg-red-500/10 p-1.5 rounded-md flex items-center justify-between gap-2">
+            <span>{errorMessage}</span>
+            {onClearError && (
+              <button
+                type="button"
+                onClick={onClearError}
+                className="text-red-400 hover:text-red-300 font-bold px-1 cursor-pointer"
+                title="Dismiss message"
+                aria-label="Dismiss message"
+              >
+                ×
+              </button>
+            )}
           </div>
         )}
       </div>

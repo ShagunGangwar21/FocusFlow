@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   fetchTeams,
   createTeam,
@@ -36,7 +36,15 @@ import {
   IconEdit,
 } from '../common/Icons';
 
-export default function TeamsModule({ onStartFocus, onEditTask, activeSession }) {
+export default function TeamsModule({
+  onStartFocus,
+  onEditTask,
+  activeSession,
+  isTimerMutating = false,
+  timerError = null,
+  taskElapsedSeconds = {},
+  timerSeconds = 0,
+}) {
   const [teams, setTeams] = useState([]);
   const [selectedTeamId, setSelectedTeamId] = useState(null);
   const [currentTeam, setCurrentTeam] = useState(null);
@@ -59,20 +67,27 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
   const [isDeleteTeamOpen, setIsDeleteTeamOpen] = useState(false);
 
   // Load user's teams
-  const loadTeams = useCallback(async () => {
+  const loadTeams = useCallback(async (preferredTeamId) => {
     try {
       setError(null);
       const data = await fetchTeams();
-      setTeams(data || []);
-      if (data && data.length > 0 && !selectedTeamId) {
-        setSelectedTeamId(data[0].id);
-      }
+      const list = data || [];
+      setTeams(list);
+      setSelectedTeamId((prevSelected) => {
+        if (preferredTeamId && list.some((t) => t.id === preferredTeamId)) {
+          return preferredTeamId;
+        }
+        if (prevSelected && list.some((t) => t.id === prevSelected)) {
+          return prevSelected;
+        }
+        return list.length > 0 ? list[0].id : null;
+      });
     } catch (err) {
       setError(err.message || 'Failed to load teams');
     } finally {
       setIsLoading(false);
     }
-  }, [selectedTeamId]);
+  }, []);
 
   // Load specific team details & tasks
   const loadTeamDetails = useCallback(async (teamId) => {
@@ -97,14 +112,28 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
     loadTeams();
   }, [loadTeams]);
 
+  // Deduplicated team details & tasks loader
+  const lastLoadedRef = useRef({ teamId: null, timerKey: null });
+
   useEffect(() => {
-    if (selectedTeamId) {
-      loadTeamDetails(selectedTeamId);
-    } else {
+    if (!selectedTeamId) {
       setCurrentTeam(null);
       setTeamTasks([]);
+      lastLoadedRef.current = { teamId: null, timerKey: null };
+      return;
     }
-  }, [selectedTeamId, loadTeamDetails]);
+
+    const timerKey = `${activeSession?.id || ''}_${activeSession?.status || ''}_${activeSession?.taskId || ''}`;
+    if (
+      lastLoadedRef.current.teamId === selectedTeamId &&
+      lastLoadedRef.current.timerKey === timerKey
+    ) {
+      return;
+    }
+
+    lastLoadedRef.current = { teamId: selectedTeamId, timerKey };
+    loadTeamDetails(selectedTeamId);
+  }, [selectedTeamId, activeSession?.id, activeSession?.status, activeSession?.taskId, loadTeamDetails]);
 
   const showNotification = (msg) => {
     setSuccessMessage(msg);
@@ -115,8 +144,7 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
   const handleCreateTeam = async (data) => {
     const newTeam = await createTeam(data);
     showNotification(`Team "${newTeam.name}" created successfully`);
-    await loadTeams();
-    setSelectedTeamId(newTeam.id);
+    await loadTeams(newTeam.id);
   };
 
   const handleInviteMember = async (inviteData) => {
@@ -181,11 +209,13 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
   const handleDeleteTeam = async () => {
     if (!selectedTeamId || !currentTeam) return;
     try {
-      await deleteTeam(selectedTeamId);
+      const deletedId = selectedTeamId;
+      await deleteTeam(deletedId);
       showNotification(`Team "${currentTeam.name}" deleted`);
       setIsDeleteTeamOpen(false);
-      setSelectedTeamId(null);
-      await loadTeams();
+      const remainingTeams = teams.filter((t) => t.id !== deletedId);
+      const nextId = remainingTeams.length > 0 ? remainingTeams[0].id : null;
+      await loadTeams(nextId);
     } catch (err) {
       setError(err.message || 'Failed to delete team');
       setIsDeleteTeamOpen(false);
@@ -275,11 +305,11 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
   return (
     <div className="space-y-5 animate-fadeIn">
       {/* Alert Notifications */}
-      {error && (
+      {(error || timerError) && (
         <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 text-xs flex items-center justify-between">
           <div className="flex items-center gap-2">
             <IconAlertTriangle className="w-4 h-4 shrink-0" />
-            <span>{error}</span>
+            <span>{error || timerError}</span>
           </div>
           <button
             type="button"
@@ -646,6 +676,18 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
               {filteredTasks.map((task) => {
                 const isCompleted = task.status === 'COMPLETED';
                 const isFixed = task.scheduleType === 'FIXED';
+                const isFocusing = activeSession && activeSession.taskId === task.id;
+                const isPaused = isFocusing && activeSession.status === 'PAUSED';
+
+                // Persisted accumulated focus seconds from server
+                const persistedSeconds = task.accumulatedFocusSeconds !== undefined
+                  ? task.accumulatedFocusSeconds
+                  : (task.actualDurationMinutes ? task.actualDurationMinutes * 60 : 0);
+
+                // Total live focus time: includes active ticking session seconds if currently focusing
+                const totalFocusSeconds = isFocusing
+                  ? ((activeSession.accumulatedFocusSeconds !== undefined ? activeSession.accumulatedFocusSeconds : persistedSeconds) + timerSeconds)
+                  : (taskElapsedSeconds[task.id] !== undefined ? taskElapsedSeconds[task.id] : persistedSeconds);
                 return (
                   <div
                     key={task.id}
@@ -711,6 +753,22 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
                               {task.project.name}
                             </span>
                           )}
+
+                          {/* Accumulated / Live Focus Duration Badge */}
+                          {totalFocusSeconds > 0 && !isCompleted && (
+                            <span
+                              className={`text-[10px] font-mono font-medium flex items-center gap-1 px-2 py-0.5 rounded-full border ${
+                                isFocusing
+                                  ? 'bg-[var(--accent)]/15 border-[var(--accent)]/30 text-[var(--accent)] animate-pulse'
+                                  : 'bg-[var(--bg-subtle)] border-[var(--border-subtle)] text-[var(--text-muted)]'
+                              }`}
+                            >
+                              <IconPlay className="w-2.5 h-2.5" />
+                              <span>
+                                {Math.floor(totalFocusSeconds / 60)}m {totalFocusSeconds % 60}s focused
+                              </span>
+                            </span>
+                          )}
                         </div>
 
                         {task.description && (
@@ -741,11 +799,22 @@ export default function TeamsModule({ onStartFocus, onEditTask, activeSession })
                       {!isCompleted && onStartFocus && (
                         <button
                           type="button"
-                          onClick={() => onStartFocus(task)}
-                          className="px-3 py-1.5 text-xs font-semibold rounded-xl bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-text)] transition-colors cursor-pointer flex items-center gap-1 shadow-sm"
+                          disabled={isTimerMutating}
+                          onClick={() => onStartFocus(task.id)}
+                          className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${
+                            isFocusing
+                              ? 'bg-[var(--accent)] text-[var(--accent-text)] ring-2 ring-[var(--accent)]/30'
+                              : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-text)]'
+                          }`}
                         >
                           <IconPlay className="w-3 h-3" />
-                          Focus
+                          <span>
+                            {isFocusing
+                              ? (isPaused ? 'Paused' : 'Focusing...')
+                              : totalFocusSeconds > 0
+                              ? 'Resume'
+                              : 'Focus'}
+                          </span>
                         </button>
                       )}
 

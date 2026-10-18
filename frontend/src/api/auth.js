@@ -100,10 +100,14 @@ async function request(endpoint, options = {}) {
   const data = isJson ? await res.json() : await res.text();
 
   if (!res.ok) {
-    const error = new Error(data?.error?.message || `Request failed with status ${res.status}`);
+    const defaultMsg = res.status === 429
+      ? 'Rate limit reached. Please wait a moment before trying again.'
+      : `Request failed with status ${res.status}`;
+    const error = new Error(data?.error?.message || defaultMsg);
     error.status = res.status;
-    error.code = data?.error?.code;
+    error.code = data?.error?.code || (res.status === 429 ? 'TOO_MANY_REQUESTS' : undefined);
     error.details = data?.error?.details;
+    error.retryAfter = res.headers.get('Retry-After') || data?.error?.details?.retryAfter;
     throw error;
   }
 

@@ -18,6 +18,7 @@
  */
 
 require('dotenv').config();
+process.env.NODE_ENV = 'test';
 const assert = require('assert');
 const { getPrisma } = require('../db/prisma');
 
@@ -490,11 +491,351 @@ async function runTests() {
         assert.strictEqual(hasPersonal, false, 'Personal task never leaks into team tasks query');
         console.log('  ✅ [PASS] Personal task privacy strictly isolated from teammates');
 
+        console.log('\n--- 9. Team Task Focus, Invariants & Timer Transitions ---');
+        // 9a. Authorized team member starts focus timer on an incomplete team task
+        const teamFocusRes = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(teamFocusRes.status, 201, 'Authorized member starts focus on team task (201)');
+        assert(teamFocusRes.body?.data?.session, 'Team session returned in response');
+        const teamSession = teamFocusRes.body.data.session;
+        assert.strictEqual(teamSession.taskId, taskId);
+        assert.strictEqual(teamSession.status, 'RUNNING');
+        console.log('  ✅ [PASS] Focus starts successfully for authorized, incomplete team task');
+
+        // 9b. Single active timer invariant: Attempting to start another timer while one is active produces error (409)
+        const conflictRes = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(conflictRes.status, 409, 'Single active timer enforced per user (409)');
+        console.log('  ✅ [PASS] Only one focus timer can be active per user (concurrency 409)');
+
+        // 9c. Unauthorized user (outsider) cannot start focus on team task (404)
+        const unauthorizedFocusRes = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: outsider.cookies,
+                'X-CSRF-Token': outsider.csrfToken,
+            },
+        });
+        assert.strictEqual(unauthorizedFocusRes.status, 404, 'Outsider denied focus access to team task (404)');
+
+        // Removed member also cannot start focus on team task (404)
+        const removedMemberFocusRes = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: member.cookies,
+                'X-CSRF-Token': member.csrfToken,
+            },
+        });
+        assert.strictEqual(removedMemberFocusRes.status, 404, 'Removed member denied focus access to team task (404)');
+        console.log('  ✅ [PASS] Unauthorized users cannot access or focus team tasks (404)');
+
+        // 9d. Accumulating and preserving focus time across task switches
+        // Wait 1.1s so some duration elapses on team task
+        await new Promise((r) => setTimeout(r, 1100));
+
+        // Finish session without completing the task (simulating client-side task switch)
+        const finishTeamSessionRes = await request(`/sessions/${teamSession.id}/finish`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: { markTaskComplete: false },
+        });
+        assert.strictEqual(finishTeamSessionRes.status, 200, 'Team task session finished without completing task');
+        const recordedSeconds = finishTeamSessionRes.body.data.session.durationSeconds;
+        assert(recordedSeconds >= 1, `Recorded at least 1s of focus time (got ${recordedSeconds})`);
+
+        // Admin creates a personal task
+        const adminPersonalRes = await request('/tasks', {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: {
+                title: 'Admin Private Investigation',
+                scope: 'PERSONAL',
+                priority: 'MEDIUM',
+            },
+        });
+        const adminPersonalId = adminPersonalRes.body?.data?.task?.id || adminPersonalRes.body?.data?.id;
+
+        // Admin focuses on personal task
+        const startPersonalRes = await request(`/tasks/${adminPersonalId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(startPersonalRes.status, 201, 'Admin starts focus on personal task');
+        const personalSession = startPersonalRes.body.data.session;
+
+        // Finish personal task session
+        await request(`/sessions/${personalSession.id}/finish`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: { markTaskComplete: false },
+        });
+
+        // Admin switches back to the team task: verify accumulated focus time is preserved
+        const resumeTeamTaskRes = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(resumeTeamTaskRes.status, 201, 'Admin resumes focus on original team task');
+        const resumedTeamSession = resumeTeamTaskRes.body.data.session;
+        assert.strictEqual(resumedTeamSession.accumulatedFocusSeconds, recordedSeconds, 'Accumulated focus time preserved upon returning to task');
+        console.log('  ✅ [PASS] Switching tasks preserves accumulated focus time');
+
+        // Clean up active session
+        await request(`/sessions/${resumedTeamSession.id}/finish`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: { markTaskComplete: false },
+        });
+
+        // 9e. Dedicated Team Task A -> Team Task B -> Team Task A Switching Regression Test
+        // Create second team task in the same team
+        const taskBRes = await request('/tasks', {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: {
+                title: 'Team Shared Deliverable B',
+                scope: 'TEAM',
+                teamId: teamId,
+                priority: 'HIGH',
+                estimatedDurationMinutes: 30,
+            },
+        });
+        assert.strictEqual(taskBRes.status, 201, 'Team Task B created');
+        const taskBId = taskBRes.body?.data?.task?.id || taskBRes.body?.data?.id;
+
+        // Step 1: Start focus on Team Task B (brand new task)
+        const startTeamBRes = await request(`/tasks/${taskBId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(startTeamBRes.status, 201, 'Team Task B session starts');
+        const sessionB = startTeamBRes.body.data.session;
+        assert.strictEqual(sessionB.accumulatedFocusSeconds, 0, 'New team task starts with 0 accumulated seconds');
+        assert.strictEqual(sessionB.elapsedSeconds, 0, 'New team task elapsed seconds starts at 0');
+
+        // Let 1.1s elapse on Team Task B
+        await new Promise((r) => setTimeout(r, 1100));
+
+        // Step 2: Enforce single-timer rule during team task switching
+        const conflictTeamA = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(conflictTeamA.status, 409, 'Cannot start Team Task A while Team Task B is active (409)');
+
+        // Step 3: Finish Team Task B without completing task (simulating client switch)
+        const finishBRes = await request(`/sessions/${sessionB.id}/finish`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: { markTaskComplete: false },
+        });
+        assert.strictEqual(finishBRes.status, 200);
+        const taskBDuration = finishBRes.body.data.session.durationSeconds;
+        assert(taskBDuration >= 1, `Team Task B recorded at least 1s, got ${taskBDuration}`);
+
+        // Step 4: Return to Team Task A
+        const returnTeamARes = await request(`/tasks/${taskId}/sessions`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+        });
+        assert.strictEqual(returnTeamARes.status, 201, 'Successfully returned to Team Task A');
+        const sessionA3 = returnTeamARes.body.data.session;
+        assert.strictEqual(
+            sessionA3.accumulatedFocusSeconds,
+            recordedSeconds,
+            'Returning to Team Task A restores historical accumulated focus seconds without reset'
+        );
+        assert.strictEqual(
+            sessionA3.totalTaskFocusSeconds,
+            recordedSeconds,
+            'totalTaskFocusSeconds reflects historical total'
+        );
+
+        // Step 5: Verify GET /sessions/active reflects the accumulated time upon return
+        const activeARefresh = await request('/sessions/active', {
+            headers: { Cookie: admin.cookies },
+        });
+        assert.strictEqual(activeARefresh.status, 200);
+        assert.strictEqual(activeARefresh.body.data.session.taskId, taskId);
+        assert.strictEqual(activeARefresh.body.data.session.accumulatedFocusSeconds, recordedSeconds);
+
+        // Step 6: Verify GET /tasks?scope=TEAM returns persisted accumulatedFocusSeconds for all team tasks
+        const teamTasksVerifyRes = await request(`/tasks?scope=TEAM&teamId=${teamId}`, {
+            headers: { Cookie: admin.cookies },
+        });
+        assert.strictEqual(teamTasksVerifyRes.status, 200);
+        const allTeamTasksList = teamTasksVerifyRes.body.data.tasks;
+        const verifiedTaskA = allTeamTasksList.find((t) => t.id === taskId);
+        const verifiedTaskB = allTeamTasksList.find((t) => t.id === taskBId);
+        assert(verifiedTaskA && verifiedTaskA.accumulatedFocusSeconds >= recordedSeconds, 'Team Task A has persisted focus seconds in tasks query');
+        assert(verifiedTaskB && verifiedTaskB.accumulatedFocusSeconds >= taskBDuration, 'Team Task B has persisted focus seconds in tasks query');
+        console.log('  ✅ [PASS] Team Task A -> Team Task B -> Team Task A switching preserves all accumulated focus time');
+
+        // Finish session A3 cleanly
+        await request(`/sessions/${sessionA3.id}/finish`, {
+            method: 'POST',
+            headers: {
+                Cookie: admin.cookies,
+                'X-CSRF-Token': admin.csrfToken,
+            },
+            body: { markTaskComplete: false },
+        });
+
+        console.log('\n--- 10. Multiple Teams per User & Team Switch Isolation ---');
+        // 10a. User creates a second team
+        const createTeam2Res = await request('/teams', {
+            method: 'POST',
+            headers: {
+                Cookie: owner.cookies,
+                'X-CSRF-Token': owner.csrfToken,
+            },
+            body: {
+                name: 'Alpha Platform Engineering Pod',
+            },
+        });
+        assert.strictEqual(createTeam2Res.status, 201, 'User can create a second team (201)');
+        const team2 = createTeam2Res.body?.data?.team || createTeam2Res.body?.data;
+        assert(team2 && team2.id, 'Second team returned with ID');
+
+        // 10b. User can list at least two teams under the same account
+        const listMultiTeamsRes = await request('/teams', {
+            headers: { Cookie: owner.cookies },
+        });
+        assert.strictEqual(listMultiTeamsRes.status, 200);
+        const ownerTeams = Array.isArray(listMultiTeamsRes.body?.data)
+            ? listMultiTeamsRes.body.data
+            : listMultiTeamsRes.body?.data?.teams || [];
+        assert(ownerTeams.length >= 2, `Owner belongs to at least 2 teams (found ${ownerTeams.length})`);
+        const hasTeam1 = ownerTeams.some((t) => t.id === teamId);
+        const hasTeam2 = ownerTeams.some((t) => t.id === team2.id);
+        assert(hasTeam1 && hasTeam2, 'Both Team 1 and Team 2 are listed for the user');
+        console.log('  ✅ [PASS] User can create and list at least two teams simultaneously');
+
+        // 10c. Create a project and task in Team 2
+        const project2Res = await request(`/teams/${team2.id}/projects`, {
+            method: 'POST',
+            headers: {
+                Cookie: owner.cookies,
+                'X-CSRF-Token': owner.csrfToken,
+            },
+            body: {
+                name: 'Team 2 Infrastructure Project',
+            },
+        });
+        assert.strictEqual(project2Res.status, 201);
+        const project2 = project2Res.body?.data?.project || project2Res.body?.data;
+
+        const taskTeam2Res = await request('/tasks', {
+            method: 'POST',
+            headers: {
+                Cookie: owner.cookies,
+                'X-CSRF-Token': owner.csrfToken,
+            },
+            body: {
+                title: 'Team 2 Dedicated Mission',
+                scope: 'TEAM',
+                teamId: team2.id,
+                projectId: project2.id,
+                priority: 'HIGH',
+            },
+        });
+        assert.strictEqual(taskTeam2Res.status, 201);
+        const task2Id = taskTeam2Res.body?.data?.task?.id || taskTeam2Res.body?.data?.id;
+
+        // Switching teams: Querying Team 1 returns only Team 1 tasks; Team 2 returns only Team 2 tasks
+        const queryTeam1Tasks = await request(`/tasks?scope=TEAM&teamId=${teamId}`, {
+            headers: { Cookie: owner.cookies },
+        });
+        const queryTeam2Tasks = await request(`/tasks?scope=TEAM&teamId=${team2.id}`, {
+            headers: { Cookie: owner.cookies },
+        });
+
+        const team1TaskIds = queryTeam1Tasks.body.data.tasks.map((t) => t.id);
+        const team2TaskIds = queryTeam2Tasks.body.data.tasks.map((t) => t.id);
+
+        assert(team1TaskIds.includes(taskId), 'Team 1 tasks query includes Team 1 task');
+        assert(!team1TaskIds.includes(task2Id), 'Team 1 tasks query does NOT include Team 2 task');
+        assert(team2TaskIds.includes(task2Id), 'Team 2 tasks query includes Team 2 task');
+        assert(!team2TaskIds.includes(taskId), 'Team 2 tasks query does NOT include Team 1 task');
+        console.log('  ✅ [PASS] Switching teams displays the correct team-specific data in full isolation');
+
+        // 10d. Deleting one team does not affect another team or personal tasks
+        const deleteTeam2Res = await request(`/teams/${team2.id}`, {
+            method: 'DELETE',
+            headers: {
+                Cookie: owner.cookies,
+                'X-CSRF-Token': owner.csrfToken,
+            },
+        });
+        assert.strictEqual(deleteTeam2Res.status, 200, 'Team 2 deleted successfully');
+
+        // Verify Team 1 still exists
+        const team1Check = await request(`/teams/${teamId}`, {
+            headers: { Cookie: owner.cookies },
+        });
+        assert.strictEqual(team1Check.status, 200, 'Team 1 remains intact after Team 2 deletion');
+
+        // Verify Owner personal task still exists
+        const personalCheck = await request(`/tasks/${personalTaskId}`, {
+            headers: { Cookie: owner.cookies },
+        });
+        assert.strictEqual(personalCheck.status, 200, 'Owner personal task remains intact after Team 2 deletion');
+        console.log('  ✅ [PASS] Deleting one team does not affect another team or personal tasks');
+
         console.log('\n====================================================');
-        console.log('Results: All Phase 6 Team Mode tests passed!');
+        console.log('Results: All Phase 6 Team Mode & Focus tests passed!');
         console.log('====================================================\n');
     } finally {
         // Database cleanup
+        await prisma.timerSegment.deleteMany({
+            where: { session: { user: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } } },
+        });
+        await prisma.timerSession.deleteMany({
+            where: { user: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
+        });
         await prisma.taskAssignee.deleteMany({
             where: { user: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
         });
@@ -503,6 +844,7 @@ async function runTests() {
                 OR: [
                     { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
                     { teamId: teamId || undefined },
+                    { team: { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } } },
                 ],
             },
         });
@@ -511,6 +853,7 @@ async function runTests() {
                 OR: [
                     { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
                     { teamId: teamId || undefined },
+                    { team: { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } } },
                 ],
             },
         });
@@ -519,22 +862,33 @@ async function runTests() {
                 OR: [
                     { invitedEmail: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } },
                     { teamId: teamId || undefined },
+                    { team: { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } } },
                 ],
             },
         });
         await prisma.teamMembership.deleteMany({
-            where: { user: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
+            where: {
+                OR: [
+                    { user: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
+                    { team: { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } } },
+                ],
+            },
         });
-        if (teamId) {
-            await prisma.team.deleteMany({ where: { id: teamId } });
-        }
+        await prisma.team.deleteMany({
+            where: {
+                OR: [
+                    { id: teamId || undefined },
+                    { owner: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
+                ],
+            },
+        });
         await prisma.userPreference.deleteMany({
             where: { user: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } } },
         });
         await prisma.user.deleteMany({
             where: { email: { in: [ownerEmail, adminEmail, memberEmail, outsiderEmail] } },
         });
-        console.log('🧹 Database Cleanup: Test users, teams, projects & tasks cleaned up cleanly.\n');
+        console.log('🧹 Database Cleanup: Test users, teams, projects, tasks & focus sessions cleaned up cleanly.\n');
     }
 }
 

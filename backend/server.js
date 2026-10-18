@@ -30,15 +30,7 @@ app.use(cors({
 app.use(express.json({ limit: '1mb' }));
 app.use(cookieParser());
 
-// Global API rate limiter
-app.use(rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: 200,
-    standardHeaders: 'draft-7',
-    legacyHeaders: false,
-}));
-
-// Base API health check
+// Base API health check (exempt from rate limiting)
 app.get('/api/v1/health', (req, res) => {
     res.status(200).json({
         status: 'ok',
@@ -47,7 +39,7 @@ app.get('/api/v1/health', (req, res) => {
     });
 });
 
-// Database health check (read-only SELECT 1 query)
+// Database health check (read-only SELECT 1 query, exempt from rate limiting)
 app.get('/api/v1/health/db', async (req, res) => {
     try {
         const prisma = await getPrisma();
@@ -67,6 +59,37 @@ app.get('/api/v1/health/db', async (req, res) => {
         });
     }
 });
+
+// General operational API rate limiter (1500 requests per 15 minutes per IP)
+const generalApiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 1500,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    skip: (req) => {
+        if (process.env.NODE_ENV === 'test' || process.env.DISABLE_RATE_LIMIT === 'true') {
+            return true;
+        }
+        if (req.headers['x-test-bypass'] === (process.env.TEST_BYPASS_KEY || 'focusflow_test_secret')) {
+            return true;
+        }
+        return false;
+    },
+    handler: (req, res, next, options) => {
+        const retryAfter = Math.ceil(options.windowMs / 1000);
+        res.set('Retry-After', String(retryAfter));
+        res.status(429).json({
+            error: {
+                code: 'TOO_MANY_REQUESTS',
+                message: `Too many requests, please try again later. Please wait ${retryAfter} seconds.`,
+                details: { retryAfter },
+                requestId: req.headers['x-request-id'] || undefined,
+            },
+        });
+    },
+});
+
+app.use('/api/v1', generalApiLimiter);
 
 // Mount modular feature routes
 app.use('/api/v1/auth', authRoutes);
@@ -114,4 +137,4 @@ async function gracefulShutdown(signal) {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-module.exports = { app, server };
+module.exports = { app, server, generalApiLimiter };

@@ -211,7 +211,13 @@ function MainAppContent() {
   };
 
   // Starts or resumes focusing on a task with server-authoritative session
-  const handleStartFocus = async (taskId) => {
+  const handleStartFocus = async (taskOrId) => {
+    const taskId = typeof taskOrId === 'object' && taskOrId !== null ? taskOrId.id : taskOrId;
+    if (!taskId) {
+      setTimerError('Invalid task identifier provided');
+      return;
+    }
+
     if (isTimerMutating) return;
     setIsTimerMutating(true);
     setTimerError(null);
@@ -231,6 +237,7 @@ function MainAppContent() {
         // Switching tasks: safely finish previous session without completing task
         await finishSession(activeSession.id, { markTaskComplete: false });
         setActiveSession(null);
+        setTimerSeconds(0);
       }
 
       // Start new server session for taskId
@@ -241,16 +248,19 @@ function MainAppContent() {
     } catch (err) {
       console.error('Failed to start focus session:', err);
       setTimerError(err.message || 'Failed to start session');
-      try {
-        const currentActive = await fetchActiveSession();
-        setActiveSession(currentActive);
-        if (currentActive) {
-          setTimerSeconds(currentActive.elapsedSeconds || 0);
+      // Do not compound rate limits with secondary requests if 429 occurred
+      if (err.status !== 429) {
+        try {
+          const currentActive = await fetchActiveSession();
+          setActiveSession(currentActive);
+          if (currentActive) {
+            setTimerSeconds(currentActive.elapsedSeconds || 0);
+          }
+        } catch (syncErr) {
+          console.error('Failed to resync active session after error:', syncErr);
         }
-      } catch (syncErr) {
-        console.error('Failed to resync active session after error:', syncErr);
+        await loadTasks();
       }
-      await loadTasks();
     } finally {
       setIsTimerMutating(false);
     }
@@ -333,6 +343,13 @@ function MainAppContent() {
         map[t.id] = taskCompletedSeconds;
       }
     });
+
+    // If active session belongs to a team task not in personal tasks array, record it in map
+    if (activeSession && map[activeSession.taskId] === undefined) {
+      const priorSeconds = activeSession.accumulatedFocusSeconds || 0;
+      map[activeSession.taskId] = priorSeconds + timerSeconds;
+    }
+
     return map;
   }, [tasks, activeSession, timerSeconds]);
 
@@ -526,6 +543,10 @@ function MainAppContent() {
               onStartFocus={handleStartFocus}
               onEditTask={setTaskToEdit}
               activeSession={activeSession}
+              isTimerMutating={isTimerMutating}
+              timerError={timerError}
+              taskElapsedSeconds={taskElapsedSeconds}
+              timerSeconds={timerSeconds}
             />
           ) : (
             /* Informative Module Placeholder View */
@@ -565,10 +586,28 @@ function MainAppContent() {
           isPaused={isTimerPaused}
           isMutating={isTimerMutating}
           errorMessage={timerError}
+          onClearError={() => setTimerError(null)}
           onTogglePause={handleToggleTimerPause}
           onFinishSession={handleFinishSession}
           onDiscardSession={handleDiscardSession}
         />
+      )}
+
+      {/* Floating Error Toast if Timer Fails to Start */}
+      {timerError && !activeTask && (
+        <div className="fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:w-96 z-50 p-3.5 rounded-xl bg-red-500/15 border border-red-500/30 text-red-500 text-xs shadow-xl backdrop-blur-md flex items-center justify-between animate-in slide-in-from-bottom-5">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold">Timer Error:</span>
+            <span>{timerError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTimerError(null)}
+            className="text-red-500 hover:text-red-400 font-bold ml-2 cursor-pointer text-sm"
+          >
+            ✕
+          </button>
+        </div>
       )}
 
       {/* Quick Add Task Modal */}

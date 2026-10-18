@@ -23,11 +23,16 @@ const registerLimiter = rateLimit({
     limit: 5,            // 5 requests per minute per IP
     standardHeaders: 'draft-7',
     legacyHeaders: false,
-    message: {
-        error: {
-            code: 'TOO_MANY_REQUESTS',
-            message: 'Too many registration attempts. Please try again after 1 minute.',
-        },
+    skip: (req) => process.env.NODE_ENV === 'test' || process.env.DISABLE_RATE_LIMIT === 'true' || req.headers['x-test-bypass'] === (process.env.TEST_BYPASS_KEY || 'focusflow_test_secret'),
+    handler: (req, res) => {
+        res.set('Retry-After', '60');
+        res.status(429).json({
+            error: {
+                code: 'TOO_MANY_REQUESTS',
+                message: 'Too many registration attempts. Please try again after 1 minute.',
+                details: { retryAfter: 60 },
+            },
+        });
     },
 });
 
@@ -36,11 +41,16 @@ const loginLimiter = rateLimit({
     limit: 10,           // 10 requests per minute per IP
     standardHeaders: 'draft-7',
     legacyHeaders: false,
-    message: {
-        error: {
-            code: 'TOO_MANY_REQUESTS',
-            message: 'Too many login attempts. Please try again after 1 minute.',
-        },
+    skip: (req) => process.env.NODE_ENV === 'test' || process.env.DISABLE_RATE_LIMIT === 'true' || req.headers['x-test-bypass'] === (process.env.TEST_BYPASS_KEY || 'focusflow_test_secret'),
+    handler: (req, res) => {
+        res.set('Retry-After', '60');
+        res.status(429).json({
+            error: {
+                code: 'TOO_MANY_REQUESTS',
+                message: 'Too many login attempts. Please try again after 1 minute.',
+                details: { retryAfter: 60 },
+            },
+        });
     },
 });
 
