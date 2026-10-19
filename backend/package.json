@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "postinstall": "prisma generate",
+    "postinstall": "prisma generate && node -e \"require('fs').writeFileSync('generated/prisma/package.json', JSON.stringify({type:'module'}))\"",
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node tests/rate_limiting.test.js && node tests/auth.test.js && node tests/tasks.test.js && node tests/timer.test.js && node tests/timer_phase4.test.js && node tests/calendar_scheduling.test.js && node tests/teams_collaboration.test.js && node tests/goals.test.js && node tests/phase7_complete.test.js && node tests/integration_regression.test.js && node tests/settings_and_task_visibility.test.js && node tests/sound_and_alarms.test.js",
