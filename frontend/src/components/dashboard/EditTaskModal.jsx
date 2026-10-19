@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { IconX, IconLock, IconUnlock } from '../common/Icons';
+import { getLocalDateKey } from '../calendar/CalendarModule';
+import { validateDurationInput } from './QuickAddTaskModal';
 
 export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [scheduleType, setScheduleType] = useState('FLEXIBLE');
   const [durationMinutes, setDurationMinutes] = useState(30);
+  const [durationError, setDurationError] = useState(null);
   const [priority, setPriority] = useState('MEDIUM');
   const [status, setStatus] = useState('PENDING');
   const [scheduledDate, setScheduledDate] = useState('');
@@ -21,11 +24,12 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
       setDescription(task.description || '');
       setScheduleType(task.scheduleType || 'FLEXIBLE');
       setDurationMinutes(task.estimatedDurationMinutes || 30);
+      setDurationError(null);
       setPriority(task.priority || 'MEDIUM');
       setStatus(task.status || 'PENDING');
       if (task.startAt) {
         const d = new Date(task.startAt);
-        setScheduledDate(d.toISOString().split('T')[0]);
+        setScheduledDate(getLocalDateKey(d));
         setStartTime(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }));
       } else {
         setScheduledDate('');
@@ -51,6 +55,25 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
 
   if (!isOpen || !task) return null;
 
+  const handleDurationChange = (e) => {
+    const val = e.target.value;
+    setDurationMinutes(val);
+    setDurationError(validateDurationInput(val));
+  };
+
+  const handlePresetClick = (preset) => {
+    setDurationMinutes(preset);
+    setDurationError(null);
+  };
+
+  const durationNum = parseInt(durationMinutes, 10);
+  const isPresetHighlighted = (preset) => {
+    if (durationError) return false;
+    const str = String(durationMinutes).trim();
+    if (!str || str.includes('.') || str.includes(',')) return false;
+    return durationNum === preset;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     const trimmedTitle = title.trim();
@@ -59,28 +82,46 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
       return;
     }
 
+    const durErr = validateDurationInput(durationMinutes);
+    if (durErr) {
+      setDurationError(durErr);
+      return;
+    }
+
+    const parsedDuration = parseInt(durationMinutes, 10);
+
     setError(null);
     setIsSubmitting(true);
 
     try {
       let startAt = null;
       let endAt = null;
-      if (scheduledDate && startTime) {
-        const s = new Date(`${scheduledDate}T${startTime}:00`);
-        startAt = s.toISOString();
-        const eTime = new Date(s.getTime() + Number(durationMinutes) * 60000);
-        endAt = eTime.toISOString();
+      let deadlineAt = null;
+      if (scheduledDate) {
+        if (startTime) {
+          const s = new Date(`${scheduledDate}T${startTime}:00`);
+          startAt = s.toISOString();
+          const eTime = new Date(s.getTime() + parsedDuration * 60000);
+          endAt = eTime.toISOString();
+        } else {
+          const s = new Date(`${scheduledDate}T09:00:00`);
+          startAt = s.toISOString();
+          const eTime = new Date(s.getTime() + parsedDuration * 60000);
+          endAt = eTime.toISOString();
+        }
+        deadlineAt = new Date(`${scheduledDate}T23:59:59.999`).toISOString();
       }
 
       await onUpdateTask(task.id, {
         title: trimmedTitle,
         description: description.trim() || null,
         scheduleType,
-        estimatedDurationMinutes: Number(durationMinutes),
+        estimatedDurationMinutes: parsedDuration,
         priority,
         status,
         startAt,
         endAt,
+        deadlineAt,
         version: task.version, // Optimistic concurrency protection
       });
 
@@ -199,31 +240,68 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
             </div>
           </div>
 
-          {/* Duration, Priority & Status */}
-          <div className="grid grid-cols-3 gap-2.5">
-            <div>
-              <label htmlFor="edit-duration-input" className="block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1">
-                Duration
-              </label>
-              <select
+          {/* Estimated Duration */}
+          <div>
+            <label htmlFor="edit-duration-input" className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
+              Estimated Duration <span className="text-red-400">*</span>
+            </label>
+            <div className="relative flex items-center">
+              <input
                 id="edit-duration-input"
+                type="number"
+                min="1"
+                step="1"
                 value={durationMinutes}
-                onChange={(e) => setDurationMinutes(e.target.value)}
+                onChange={handleDurationChange}
                 disabled={isSubmitting}
-                className="w-full px-2.5 py-2 text-xs rounded-lg bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
-              >
-                <option value={15}>15m</option>
-                <option value={25}>25m</option>
-                <option value={30}>30m</option>
-                <option value={45}>45m</option>
-                <option value={60}>60m</option>
-                <option value={90}>90m</option>
-                <option value={120}>120m</option>
-              </select>
+                placeholder="Enter duration"
+                aria-invalid={!!durationError}
+                aria-describedby={durationError ? 'edit-duration-error' : undefined}
+                className={`w-full px-3 py-2 pr-20 text-sm rounded-lg bg-[var(--bg-subtle)] border text-[var(--text-main)] placeholder-[var(--text-dim)] focus:outline-none transition-colors disabled:opacity-50 ${
+                  durationError
+                    ? 'border-red-500 focus:border-red-500'
+                    : 'border-[var(--border-subtle)] focus:border-[var(--accent)]'
+                }`}
+              />
+              <span className="absolute right-3 text-xs font-medium text-[var(--text-muted)] pointer-events-none select-none">
+                minutes
+              </span>
             </div>
 
+            {/* Inline validation message */}
+            {durationError && (
+              <p id="edit-duration-error" className="mt-1.5 text-xs text-red-500 dark:text-red-400 font-medium">
+                {durationError}
+              </p>
+            )}
+
+            {/* Quick-select duration buttons */}
+            <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+              {[15, 25, 45, 60].map((preset) => {
+                const highlighted = isPresetHighlighted(preset);
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => handlePresetClick(preset)}
+                    disabled={isSubmitting}
+                    className={`px-3 py-1 text-xs font-medium rounded-lg border transition-all cursor-pointer ${
+                      highlighted
+                        ? 'bg-[var(--accent)] text-[var(--accent-text)] border-[var(--accent)] font-semibold shadow-xs'
+                        : 'bg-[var(--bg-subtle)] text-[var(--text-muted)] border-[var(--border-subtle)] hover:text-[var(--text-main)] hover:border-[var(--border-strong)]'
+                    }`}
+                  >
+                    {preset} min
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Priority & Status */}
+          <div className="grid grid-cols-2 gap-3">
             <div>
-              <label htmlFor="edit-priority-input" className="block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1">
+              <label htmlFor="edit-priority-input" className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
                 Priority
               </label>
               <select
@@ -231,7 +309,7 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
                 value={priority}
                 onChange={(e) => setPriority(e.target.value)}
                 disabled={isSubmitting}
-                className="w-full px-2.5 py-2 text-xs rounded-lg bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                className="w-full px-3 py-2 text-sm rounded-lg bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
               >
                 <option value="LOW">Low</option>
                 <option value="MEDIUM">Medium</option>
@@ -240,7 +318,7 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
             </div>
 
             <div>
-              <label htmlFor="edit-status-input" className="block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1">
+              <label htmlFor="edit-status-input" className="block text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)] mb-1.5">
                 Status
               </label>
               <select
@@ -248,7 +326,7 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
                 disabled={isSubmitting}
-                className="w-full px-2.5 py-2 text-xs rounded-lg bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                className="w-full px-3 py-2 text-sm rounded-lg bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
               >
                 <option value="PENDING">Pending</option>
                 <option value="IN_PROGRESS">In Progress</option>
@@ -269,7 +347,7 @@ export default function EditTaskModal({ isOpen, task, onClose, onUpdateTask }) {
             </button>
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || !!durationError}
               className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-text)] transition-colors cursor-pointer disabled:opacity-50 active:scale-95"
             >
               {isSubmitting && (

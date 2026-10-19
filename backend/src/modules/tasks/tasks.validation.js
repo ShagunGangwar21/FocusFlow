@@ -27,7 +27,11 @@ const createTaskSchema = z.object({
     startAt: z.string().datetime({ offset: true }).optional().nullable(),
     endAt: z.string().datetime({ offset: true }).optional().nullable(),
     deadlineAt: z.string().datetime({ offset: true }).optional().nullable(),
-    estimatedDurationMinutes: z.coerce.number().int().min(5, 'Estimated duration must be at least 5 minutes').default(30),
+    estimatedDurationMinutes: z.coerce.number({
+        invalid_type_error: 'Please enter a valid number of minutes',
+    }).int({
+        message: 'Duration must be a whole number of minutes',
+    }).min(1, 'Please enter a duration greater than 0 minutes').default(30),
     priority: PriorityEnum.default('MEDIUM'),
     scheduleType: ScheduleTypeEnum.default('FLEXIBLE'),
     assigneeUserIds: z.array(z.string().min(1)).optional(),
@@ -64,7 +68,11 @@ const updateTaskSchema = z.object({
     startAt: z.string().datetime({ offset: true }).optional().nullable(),
     endAt: z.string().datetime({ offset: true }).optional().nullable(),
     deadlineAt: z.string().datetime({ offset: true }).optional().nullable(),
-    estimatedDurationMinutes: z.coerce.number().int().min(5, 'Estimated duration must be at least 5 minutes').optional(),
+    estimatedDurationMinutes: z.coerce.number({
+        invalid_type_error: 'Please enter a valid number of minutes',
+    }).int({
+        message: 'Duration must be a whole number of minutes',
+    }).min(1, 'Please enter a duration greater than 0 minutes').optional(),
     priority: PriorityEnum.optional(),
     status: TaskStatusEnum.optional(),
     scheduleType: ScheduleTypeEnum.optional(),

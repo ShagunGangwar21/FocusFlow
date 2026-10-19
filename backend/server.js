@@ -16,6 +16,10 @@ const calendarRoutes = require('./src/modules/calendar/calendar.routes');
 const schedulingRoutes = require('./src/modules/scheduling/scheduling.routes');
 const { teamsRouter, invitationsRouter, projectsRouter } = require('./src/modules/teams/teams.routes');
 const goalsRoutes = require('./src/modules/goals/goals.routes');
+const streaksRoutes = require('./src/modules/streaks/streaks.routes');
+const achievementsRoutes = require('./src/modules/achievements/achievements.routes');
+const analyticsRoutes = require('./src/modules/analytics/analytics.routes');
+const usersRoutes = require('./src/modules/users/users.routes');
 const { errorHandler } = require('./src/middleware/errorHandler');
 
 const app = express();
@@ -102,6 +106,10 @@ app.use('/api/v1/teams', teamsRouter);
 app.use('/api/v1/invitations', invitationsRouter);
 app.use('/api/v1/projects', projectsRouter);
 app.use('/api/v1/goals', goalsRoutes);
+app.use('/api/v1/streaks', streaksRoutes);
+app.use('/api/v1/achievements', achievementsRoutes);
+app.use('/api/v1/analytics', analyticsRoutes);
+app.use('/api/v1/users', usersRoutes);
 
 // Centralized error handler
 app.use(errorHandler);

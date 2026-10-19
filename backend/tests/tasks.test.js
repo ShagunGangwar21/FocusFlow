@@ -189,15 +189,31 @@ async function runTests() {
         assert.strictEqual(valEmptyTitle.body.error.code, 'VALIDATION_ERROR');
         console.log('  ✅ [PASS] Rejects empty task title with 400 VALIDATION_ERROR');
 
-        // Duration < 5 minutes
-        const valDuration = await makeRequest(
+        // Duration validation: reject 0, negative, and decimal
+        const valDurationZero = await makeRequest(
             'POST',
             '/api/v1/tasks',
-            { title: 'Short Task', estimatedDurationMinutes: 2 },
+            { title: 'Zero Duration Task', estimatedDurationMinutes: 0 },
             { Cookie: buildCookieHeader(userACookies), 'X-CSRF-Token': userACsrf }
         );
-        assert.strictEqual(valDuration.status, 400);
-        console.log('  ✅ [PASS] Rejects estimated duration < 5 minutes');
+        assert.strictEqual(valDurationZero.status, 400);
+
+        const valDurationNegative = await makeRequest(
+            'POST',
+            '/api/v1/tasks',
+            { title: 'Negative Duration Task', estimatedDurationMinutes: -5 },
+            { Cookie: buildCookieHeader(userACookies), 'X-CSRF-Token': userACsrf }
+        );
+        assert.strictEqual(valDurationNegative.status, 400);
+
+        const valDurationDecimal = await makeRequest(
+            'POST',
+            '/api/v1/tasks',
+            { title: 'Decimal Duration Task', estimatedDurationMinutes: 12.5 },
+            { Cookie: buildCookieHeader(userACookies), 'X-CSRF-Token': userACsrf }
+        );
+        assert.strictEqual(valDurationDecimal.status, 400);
+        console.log('  ✅ [PASS] Rejects estimated duration 0, negative, and decimal (400)');
 
         // endAt <= startAt
         const now = new Date();
@@ -256,6 +272,36 @@ async function runTests() {
         console.log('  ✅ [PASS] POST /api/v1/tasks creates personal task with version 1 (201)');
 
         const taskId = createdTask.id;
+
+        // Verify custom durations: 1 min, 10 min, 30 min, 75 min
+        for (const dur of [1, 10, 30, 75]) {
+            const customDurRes = await makeRequest(
+                'POST',
+                '/api/v1/tasks',
+                {
+                    title: `Task with ${dur}m duration`,
+                    estimatedDurationMinutes: dur,
+                },
+                { Cookie: buildCookieHeader(userACookies), 'X-CSRF-Token': userACsrf }
+            );
+            assert.strictEqual(customDurRes.status, 201, `Duration ${dur}m should return 201`);
+            assert.strictEqual(customDurRes.body.data.task.estimatedDurationMinutes, dur);
+            const fetchCustom = await makeRequest(
+                'GET',
+                `/api/v1/tasks/${customDurRes.body.data.task.id}`,
+                null,
+                { Cookie: buildCookieHeader(userACookies) }
+            );
+            assert.strictEqual(fetchCustom.body.data.task.estimatedDurationMinutes, dur);
+            // Delete custom duration test task after verifying to keep task count clean
+            await makeRequest(
+                'DELETE',
+                `/api/v1/tasks/${customDurRes.body.data.task.id}`,
+                null,
+                { Cookie: buildCookieHeader(userACookies), 'X-CSRF-Token': userACsrf }
+            );
+        }
+        console.log('  ✅ [PASS] Custom durations 1m, 10m, 30m, 75m created and persisted correctly');
 
         // Retrieve Task by ID
         const getRes = await makeRequest(

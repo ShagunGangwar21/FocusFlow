@@ -220,8 +220,8 @@ export default function CreateTeamTaskModal({
               </label>
               <input
                 type="number"
-                min={5}
-                step={5}
+                min={1}
+                step={1}
                 value={estimatedDurationMinutes}
                 onChange={(e) => setEstimatedDurationMinutes(e.target.value)}
                 className="w-full px-3 py-2 text-xs rounded-xl bg-[var(--bg-subtle)] border border-[var(--border-subtle)] text-[var(--text-main)] focus:outline-none focus:border-[var(--accent)]"

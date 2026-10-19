@@ -127,7 +127,7 @@
   - `startAt`: optional ISO-8601 string.
   - `endAt`: optional ISO-8601 string (must be > `startAt` if present).
   - `deadlineAt`: optional ISO-8601 string.
-  - `estimatedDurationMinutes`: integer >= 5 (default 30).
+  - `estimatedDurationMinutes`: integer >= 1 (default 30).
   - `priority`: enum (`"LOW"`, `"MEDIUM"`, `"HIGH"`), default `"MEDIUM"`.
   - `scheduleType`: enum (`"FIXED"`, `"FLEXIBLE"`), default `"FLEXIBLE"`.
 - **Status:** `201 Created`

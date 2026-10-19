@@ -601,7 +601,7 @@ DROP CONSTRAINT IF EXISTS check_task_estimated_duration;
 
 ALTER TABLE "Task" 
 ADD CONSTRAINT check_task_estimated_duration 
-CHECK ("estimatedDurationMinutes" >= 5);
+CHECK ("estimatedDurationMinutes" >= 1);
 
 ALTER TABLE "Goal" 
 DROP CONSTRAINT IF EXISTS check_goal_target_value;

@@ -82,6 +82,20 @@ export function AuthProvider({ children }) {
 
   const clearError = useCallback(() => setError(null), []);
 
+  const updateUser = useCallback((updatedUser) => {
+    setUser((prev) => (prev ? { ...prev, ...updatedUser } : updatedUser));
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const refreshed = await fetchCurrentUser();
+      setUser(refreshed);
+      return refreshed;
+    } catch (e) {
+      console.warn('[AuthContext] Refresh user error:', e);
+    }
+  }, []);
+
   const value = useMemo(() => ({
     user,
     isLoading,
@@ -90,7 +104,9 @@ export function AuthProvider({ children }) {
     register,
     logout,
     clearError,
-  }), [user, isLoading, error, login, register, logout, clearError]);
+    updateUser,
+    refreshUser,
+  }), [user, isLoading, error, login, register, logout, clearError, updateUser, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

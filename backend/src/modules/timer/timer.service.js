@@ -550,6 +550,11 @@ async function finishSession(userId, sessionId, { markTaskComplete = false } = {
 
     const accumulatedFocusSeconds = await getTaskAccumulatedFocusSeconds(userId, session.taskId);
 
+    try {
+        const { evaluateUserAchievements } = require('../achievements/achievements.service');
+        evaluateUserAchievements(userId).catch(() => {});
+    } catch (_) {}
+
     return {
         session: {
             id: result.session.id,

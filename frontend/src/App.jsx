@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import AuthView from './components/auth/AuthView';
 import Sidebar from './components/layout/Sidebar';
@@ -9,9 +9,20 @@ import UpcomingTasks from './components/dashboard/UpcomingTasks';
 import FocusSessionHistory from './components/dashboard/FocusSessionHistory';
 import CalendarModule from './components/calendar/CalendarModule';
 import TeamsModule from './components/teams/TeamsModule';
+import GoalsModule from './components/goals/GoalsModule';
+import AnalyticsModule from './components/analytics/AnalyticsModule';
+import TasksModule from './components/tasks/TasksModule';
+import SettingsModule from './components/settings/SettingsModule';
+import { getLocalDateKey } from './components/calendar/CalendarModule';
 import QuickAddTaskModal from './components/dashboard/QuickAddTaskModal';
 import EditTaskModal from './components/dashboard/EditTaskModal';
 import ActiveTimerBanner from './components/dashboard/ActiveTimerBanner';
+import TimerAlarmModal from './components/timer/TimerAlarmModal';
+import {
+  playAlarmSound,
+  stopAllSounds,
+  getRingtoneName,
+} from './utils/soundEngine';
 import {
   fetchTasks,
   createTask,
@@ -28,6 +39,8 @@ import {
   finishSession,
   discardSession,
 } from './api/timer';
+import { fetchStreakSummary } from './api/streaks';
+import { fetchWeeklyReview } from './api/analytics';
 import {
   IconClock,
   IconShieldCheck,
@@ -39,7 +52,7 @@ import {
 } from './components/common/Icons';
 
 function MainAppContent() {
-  const { user, isLoading, logout } = useAuth();
+  const { user, isLoading, logout, updateUser } = useAuth();
 
   // Theme state: dark navy default, persisted in localStorage
   const [theme, setTheme] = useState(() => {
@@ -52,10 +65,16 @@ function MainAppContent() {
 
   // Real Task States
   const [tasks, setTasks] = useState([]);
+  const [tasksVersion, setTasksVersion] = useState(0);
   const [isTasksLoading, setIsTasksLoading] = useState(true);
   const [tasksError, setTasksError] = useState(null);
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [taskToEdit, setTaskToEdit] = useState(null);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(null);
+
+  // Server-Authoritative Streak & Weekly Review Data
+  const [serverStreak, setServerStreak] = useState(null);
+  const [serverWeeklyReview, setServerWeeklyReview] = useState(null);
 
   // Server-Authoritative Active Timer Session State
   const [activeSession, setActiveSession] = useState(null);
@@ -65,6 +84,49 @@ function MainAppContent() {
 
   const activeTaskId = activeSession ? activeSession.taskId : null;
   const isTimerPaused = activeSession ? activeSession.status === 'PAUSED' : false;
+
+  // Break Timer State
+  const [breakTimer, setBreakTimer] = useState({
+    isActive: false,
+    isPaused: false,
+    totalSeconds: 300,
+    elapsedSeconds: 0,
+    taskId: null,
+    taskTitle: '',
+  });
+
+  // Alarm Modal State
+  const [alarmModal, setAlarmModal] = useState({
+    isOpen: false,
+    alarmType: 'focus', // 'focus' | 'break'
+    taskTitle: '',
+    durationFormatted: '',
+    ringtoneName: '',
+    isPlayingSound: false,
+    isMuted: false,
+    taskId: null,
+  });
+
+  // Duplicate alarm single-trigger guard refs
+  const focusAlarmFiredRef = useRef(null);
+  const breakAlarmFiredRef = useRef(false);
+
+  // Active Task and Target Duration Computation
+  const activeTask = useMemo(() => {
+    if (!activeSession) return null;
+    return (
+      tasks.find((t) => t.id === activeSession.taskId) ||
+      (activeSession.task ? activeSession.task : { id: activeSession.taskId, title: 'Focus Task' })
+    );
+  }, [tasks, activeSession]);
+
+  const targetFocusMinutes = useMemo(() => {
+    if (activeTask?.estimatedDurationMinutes) return activeTask.estimatedDurationMinutes;
+    const prefMinutes = user?.preferences?.workingHours?.defaultFocusDurationMinutes;
+    return prefMinutes || 25;
+  }, [activeTask, user]);
+
+  const targetFocusSeconds = targetFocusMinutes * 60;
 
   // Sync theme with HTML document class & localStorage
   useEffect(() => {
@@ -123,9 +185,135 @@ function MainAppContent() {
     return () => clearInterval(timer);
   }, [activeSession]);
 
-  const handleToggleTheme = () => {
-    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+  // Break Timer 1-second interval
+  useEffect(() => {
+    if (!breakTimer.isActive || breakTimer.isPaused) return;
+
+    const interval = setInterval(() => {
+      setBreakTimer((prev) => {
+        if (!prev.isActive || prev.isPaused) return prev;
+        return { ...prev, elapsedSeconds: prev.elapsedSeconds + 1 };
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [breakTimer.isActive, breakTimer.isPaused]);
+
+  // Wall-clock & inactive tab reconciliation
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && user) {
+        if (activeSession) {
+          fetchActiveSession()
+            .then((session) => {
+              if (session) {
+                setActiveSession(session);
+                setTimerSeconds(session.elapsedSeconds || 0);
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [activeSession, user]);
+
+  // Focus Completion Detection & Alarm Trigger
+  useEffect(() => {
+    if (!activeSession || activeSession.status !== 'RUNNING') return;
+    if (timerSeconds < targetFocusSeconds) return;
+
+    if (focusAlarmFiredRef.current === activeSession.id) return;
+    focusAlarmFiredRef.current = activeSession.id;
+
+    const sp = user?.preferences?.soundPreferences || {};
+    const soundEnabled = sp.soundEnabled ?? true;
+    const focusSoundEnabled = sp.focusSoundEnabled ?? true;
+    const focusRingtone = sp.focusRingtone || 'gentle-chime';
+    const volume = sp.volume ?? 70;
+    const shouldPlaySound = soundEnabled && focusSoundEnabled;
+
+    if (shouldPlaySound) {
+      playAlarmSound(focusRingtone, volume);
+    }
+
+    setAlarmModal({
+      isOpen: true,
+      alarmType: 'focus',
+      taskTitle: activeTask?.title || 'Focus Task',
+      durationFormatted: `${targetFocusMinutes} minutes`,
+      ringtoneName: getRingtoneName(focusRingtone),
+      isPlayingSound: shouldPlaySound,
+      isMuted: !shouldPlaySound,
+      taskId: activeSession.taskId,
+    });
+  }, [activeSession, timerSeconds, targetFocusSeconds, targetFocusMinutes, activeTask, user]);
+
+  // Break Completion Detection & Alarm Trigger
+  useEffect(() => {
+    if (!breakTimer.isActive) return;
+    if (breakTimer.elapsedSeconds < breakTimer.totalSeconds) return;
+
+    if (breakAlarmFiredRef.current) return;
+    breakAlarmFiredRef.current = true;
+    setBreakTimer((prev) => ({ ...prev, isActive: false }));
+
+    const sp = user?.preferences?.soundPreferences || {};
+    const soundEnabled = sp.soundEnabled ?? true;
+    const breakSoundEnabled = sp.breakSoundEnabled ?? true;
+    const breakRingtone = sp.breakRingtone || 'classic-bell';
+    const volume = sp.volume ?? 70;
+    const shouldPlaySound = soundEnabled && breakSoundEnabled;
+
+    if (shouldPlaySound) {
+      playAlarmSound(breakRingtone, volume);
+    }
+
+    const formatBreakDurationDisplay = (totalSecs) => {
+      const safe = Math.max(0, Math.floor(totalSecs || 0));
+      const m = Math.floor(safe / 60);
+      const s = safe % 60;
+      if (m > 0 && s > 0) return `${m} min ${s} sec`;
+      if (m > 0) return `${m} minute${m === 1 ? '' : 's'}`;
+      return `${s} second${s === 1 ? '' : 's'}`;
+    };
+
+    setAlarmModal({
+      isOpen: true,
+      alarmType: 'break',
+      taskTitle: breakTimer.taskTitle || 'Next Focus Task',
+      durationFormatted: formatBreakDurationDisplay(breakTimer.totalSeconds),
+      ringtoneName: getRingtoneName(breakRingtone),
+      isPlayingSound: shouldPlaySound,
+      isMuted: !shouldPlaySound,
+      taskId: breakTimer.taskId,
+    });
+  }, [breakTimer, user]);
+
+  const handleToggleTheme = (newTheme) => {
+    if (typeof newTheme === 'string') {
+      setTheme(newTheme);
+    } else {
+      setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
+    }
   };
+
+  // Fetch server-authoritative streak & weekly review metrics
+  const loadMetrics = useCallback(async () => {
+    if (!user) return;
+    try {
+      const [streakData, reviewData] = await Promise.all([
+        fetchStreakSummary().catch(() => null),
+        fetchWeeklyReview().catch(() => null),
+      ]);
+      if (streakData) setServerStreak(streakData);
+      if (reviewData) setServerWeeklyReview(reviewData);
+    } catch (err) {
+      console.error('Failed to load server metrics:', err);
+    }
+  }, [user]);
 
   // Fetch real authenticated tasks from the API
   const loadTasks = useCallback(async () => {
@@ -135,6 +323,8 @@ function MainAppContent() {
     try {
       const data = await fetchTasks();
       setTasks(data.tasks);
+      // Refresh streak and weekly review authoritatively
+      loadMetrics();
     } catch (err) {
       if (err.status === 401) {
         logout();
@@ -144,18 +334,23 @@ function MainAppContent() {
     } finally {
       setIsTasksLoading(false);
     }
-  }, [user, logout]);
+  }, [user, logout, loadMetrics]);
 
   useEffect(() => {
     if (user) {
       loadTasks();
+      loadMetrics();
+    } else {
+      setTasks([]);
     }
-  }, [user, loadTasks]);
+  }, [user, loadTasks, loadMetrics]);
 
   // Create Task handler
   const handleAddTask = async (taskPayload) => {
     const created = await createTask(taskPayload);
-    setTasks((prev) => [created, ...prev]);
+    setTasks((prev) => [created, ...prev.filter((t) => t.id !== created.id)]);
+    setTasksVersion((v) => v + 1);
+    loadMetrics();
     return created;
   };
 
@@ -163,6 +358,8 @@ function MainAppContent() {
   const handleUpdateTask = async (taskId, updatePayload) => {
     const updated = await updateTask(taskId, updatePayload);
     setTasks((prev) => prev.map((t) => (t.id === taskId ? updated : t)));
+    setTasksVersion((v) => v + 1);
+    loadMetrics();
     return updated;
   };
 
@@ -188,6 +385,8 @@ function MainAppContent() {
         const completed = await completeTask(taskId, {});
         setTasks((prev) => prev.map((t) => (t.id === taskId ? completed : t)));
       }
+      setTasksVersion((v) => v + 1);
+      loadMetrics();
     } catch (err) {
       console.error('Failed to toggle task status:', err);
       loadTasks();
@@ -208,6 +407,8 @@ function MainAppContent() {
     }
     await deleteTask(taskId);
     setTasks((prev) => prev.filter((t) => t.id !== taskId));
+    setTasksVersion((v) => v + 1);
+    loadMetrics();
   };
 
   // Starts or resumes focusing on a task with server-authoritative session
@@ -223,6 +424,10 @@ function MainAppContent() {
     setTimerError(null);
 
     try {
+      stopAllSounds();
+      focusAlarmFiredRef.current = null;
+      setBreakTimer((prev) => ({ ...prev, isActive: false }));
+
       if (activeSession) {
         // If clicking on the currently active task
         if (activeSession.taskId === taskId) {
@@ -294,6 +499,8 @@ function MainAppContent() {
     if (!activeSession || isTimerMutating) return;
     setIsTimerMutating(true);
     setTimerError(null);
+    stopAllSounds();
+    focusAlarmFiredRef.current = null;
 
     try {
       await finishSession(activeSession.id, { markTaskComplete: true });
@@ -313,6 +520,8 @@ function MainAppContent() {
     if (!activeSession || isTimerMutating) return;
     setIsTimerMutating(true);
     setTimerError(null);
+    stopAllSounds();
+    focusAlarmFiredRef.current = null;
 
     try {
       await discardSession(activeSession.id);
@@ -323,6 +532,84 @@ function MainAppContent() {
       setTimerError(err.message || 'Failed to discard session');
     } finally {
       setIsTimerMutating(false);
+    }
+  };
+
+  // Break Timer Handlers
+  const handleToggleBreakPause = () => {
+    setBreakTimer((prev) => ({ ...prev, isPaused: !prev.isPaused }));
+  };
+
+  const handleSkipBreak = () => {
+    stopAllSounds();
+    setBreakTimer((prev) => ({ ...prev, isActive: false }));
+  };
+
+  // Alarm Modal Handlers
+  const handleStopAlarmSound = () => {
+    stopAllSounds();
+    setAlarmModal((prev) => ({ ...prev, isPlayingSound: false }));
+  };
+
+  const handleDismissAlarm = () => {
+    stopAllSounds();
+    setAlarmModal((prev) => ({ ...prev, isOpen: false, isPlayingSound: false }));
+  };
+
+  const handleStartBreakFromAlarm = async (breakDurationArg) => {
+    stopAllSounds();
+    const breakTaskId = alarmModal.taskId;
+    const breakTaskName = alarmModal.taskTitle;
+    setAlarmModal((prev) => ({ ...prev, isOpen: false, isPlayingSound: false }));
+
+    const savedDefaultMinutes = user?.preferences?.workingHours?.defaultBreakDurationMinutes || 5;
+    let targetSeconds = 0;
+
+    if (typeof breakDurationArg === 'object' && breakDurationArg !== null) {
+      if (typeof breakDurationArg.totalSeconds === 'number' && breakDurationArg.totalSeconds > 0) {
+        targetSeconds = breakDurationArg.totalSeconds;
+      } else {
+        const m = Number(breakDurationArg.minutes) || 0;
+        const s = Number(breakDurationArg.seconds) || 0;
+        targetSeconds = (m * 60) + s;
+      }
+    } else if (typeof breakDurationArg === 'number' && breakDurationArg > 0) {
+      targetSeconds = breakDurationArg;
+    }
+
+    if (!targetSeconds || targetSeconds <= 0) {
+      targetSeconds = savedDefaultMinutes * 60;
+    }
+
+    setBreakTimer({
+      isActive: true,
+      isPaused: false,
+      totalSeconds: targetSeconds,
+      elapsedSeconds: 0,
+      taskId: breakTaskId,
+      taskTitle: breakTaskName,
+    });
+    breakAlarmFiredRef.current = false;
+
+    // Safely finish session in background without marking task complete
+    if (activeSession) {
+      try {
+        await finishSession(activeSession.id, { markTaskComplete: false });
+        setActiveSession(null);
+        setTimerSeconds(0);
+        await loadTasks();
+      } catch (err) {
+        console.error('Failed to finish session when starting break:', err);
+      }
+    }
+  };
+
+  const handleResumeFocusFromAlarm = () => {
+    stopAllSounds();
+    const resumeTaskId = alarmModal.taskId;
+    setAlarmModal((prev) => ({ ...prev, isOpen: false, isPlayingSound: false }));
+    if (resumeTaskId) {
+      handleStartFocus(resumeTaskId);
     }
   };
 
@@ -353,8 +640,17 @@ function MainAppContent() {
     return map;
   }, [tasks, activeSession, timerSeconds]);
 
-  // Compute Weekly Activity dataset dynamically from the user's real tasks
+  // Compute Weekly Activity dataset dynamically from server review or real tasks
   const weeklyActivityData = useMemo(() => {
+    if (serverWeeklyReview?.dailyBreakdown && serverWeeklyReview.dailyBreakdown.length === 7) {
+      return serverWeeklyReview.dailyBreakdown.map((d) => ({
+        day: d.day,
+        date: d.date,
+        planned: d.plannedHours ?? d.planned ?? 0,
+        actual: d.actualHours ?? d.actual ?? 0,
+      }));
+    }
+
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 is Sun, 1 is Mon...
     const distanceToMonday = (dayOfWeek + 6) % 7;
@@ -367,14 +663,14 @@ function MainAppContent() {
     return weekDays.map((dayName, index) => {
       const date = new Date(monday);
       date.setDate(monday.getDate() + index);
-      const dateStr = date.toISOString().split('T')[0];
+      const dateStr = getLocalDateKey(date);
       const monthDayStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
       // Match tasks scheduled or created on this date
       const plannedMinutes = tasks
         .filter((t) => {
           const taskDate = (t.startAt || t.createdAt)
-            ? new Date(t.startAt || t.createdAt).toISOString().split('T')[0]
+            ? getLocalDateKey(t.startAt || t.createdAt)
             : null;
           return taskDate === dateStr;
         })
@@ -384,7 +680,7 @@ function MainAppContent() {
       const actualMinutes = tasks
         .filter((t) => {
           if (t.status !== 'COMPLETED' || !t.completedAt) return false;
-          const completedDate = new Date(t.completedAt).toISOString().split('T')[0];
+          const completedDate = getLocalDateKey(t.completedAt);
           return completedDate === dateStr;
         })
         .reduce((sum, t) => sum + (t.actualDurationMinutes || t.estimatedDurationMinutes || 0), 0);
@@ -396,7 +692,7 @@ function MainAppContent() {
         actual: parseFloat((actualMinutes / 60).toFixed(1)),
       };
     });
-  }, [tasks]);
+  }, [tasks, serverWeeklyReview]);
 
   // 1. Loading Splash Screen
   if (isLoading) {
@@ -417,14 +713,18 @@ function MainAppContent() {
     return <AuthView theme={theme} onToggleTheme={handleToggleTheme} />;
   }
 
-  const activeTask = activeSession
-    ? tasks.find((t) => t.id === activeSession.taskId) || activeSession.task
-    : null;
   const firstName = user.name ? user.name.split(' ')[0] : 'there';
 
-  // Dynamic real task counts
-  const fixedCount = tasks.filter((t) => t.scheduleType === 'FIXED').length;
-  const flexibleCount = tasks.filter((t) => t.scheduleType === 'FLEXIBLE').length;
+  // Dynamic real task counts for today
+  const todayKey = getLocalDateKey(new Date());
+  const todayTasks = tasks.filter((t) => {
+    const taskDate = (t.startAt || t.createdAt)
+      ? getLocalDateKey(t.startAt || t.createdAt)
+      : null;
+    return taskDate === todayKey;
+  });
+  const fixedCount = todayTasks.filter((t) => t.scheduleType === 'FIXED').length;
+  const flexibleCount = todayTasks.filter((t) => t.scheduleType === 'FLEXIBLE').length;
 
   // 3. Authenticated Dashboard
   return (
@@ -437,6 +737,7 @@ function MainAppContent() {
         onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
         isMobileOpen={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
+        taskCount={tasks.length}
       />
 
       {/* Main Content Canvas */}
@@ -454,6 +755,7 @@ function MainAppContent() {
           onOpenQuickAdd={() => setIsQuickAddOpen(true)}
           user={user}
           onLogout={logout}
+          onSelectNav={setActiveNav}
         />
 
         {/* Dynamic Page View Area */}
@@ -470,7 +772,7 @@ function MainAppContent() {
                     </h2>
                   </div>
                   <p className="text-xs sm:text-sm text-[var(--text-muted)]">
-                    {tasks.length === 0 ? (
+                    {todayTasks.length === 0 ? (
                       'You have no tasks scheduled for today. Create your first task to get started.'
                     ) : (
                       <>
@@ -492,8 +794,13 @@ function MainAppContent() {
                 </div>
               </div>
 
-              {/* 4 Core Summary Metric Cards (Dynamic from real task + active timer data) */}
-              <StatCards tasks={tasks} activeFocusSeconds={timerSeconds} />
+              {/* 4 Core Summary Metric Cards (Dynamic from real task + active timer + server streak data) */}
+              <StatCards
+                tasks={tasks}
+                activeFocusSeconds={timerSeconds}
+                streakData={serverStreak}
+                analyticsData={serverWeeklyReview?.summary}
+              />
 
               {/* Grid: Tasks List & Weekly Activity Chart */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -528,6 +835,26 @@ function MainAppContent() {
               onStartFocus={handleStartFocus}
               activeSession={activeSession}
             />
+          ) : activeNav === 'tasks' ? (
+            /* Dedicated Tasks Module */
+            <TasksModule
+              tasks={tasks}
+              isLoading={isTasksLoading}
+              error={tasksError}
+              onRetry={loadTasks}
+              onToggleComplete={handleToggleComplete}
+              activeTaskId={activeTaskId}
+              taskElapsedSeconds={taskElapsedSeconds}
+              isTimerMutating={isTimerMutating}
+              onStartFocus={handleStartFocus}
+              onOpenQuickAdd={() => setIsQuickAddOpen(true)}
+              onEditTask={setTaskToEdit}
+              onDeleteTask={handleDeleteTask}
+              onNavigateToCalendar={(targetDate) => {
+                setSelectedCalendarDate(targetDate);
+                setActiveNav('calendar');
+              }}
+            />
           ) : activeNav === 'calendar' ? (
             /* Dedicated Phase 5 Calendar & Scheduling Recovery Module */
             <CalendarModule
@@ -536,6 +863,8 @@ function MainAppContent() {
               onOpenQuickAdd={() => setIsQuickAddOpen(true)}
               onTasksChanged={loadTasks}
               activeSession={activeSession}
+              initialDate={selectedCalendarDate}
+              tasksVersion={tasksVersion}
             />
           ) : activeNav === 'teams' ? (
             /* Dedicated Phase 6 Team Mode & Collaboration Hub */
@@ -547,6 +876,21 @@ function MainAppContent() {
               timerError={timerError}
               taskElapsedSeconds={taskElapsedSeconds}
               timerSeconds={timerSeconds}
+            />
+          ) : activeNav === 'goals' ? (
+            /* Dedicated Phase 7 Goals & Achievements Module */
+            <GoalsModule />
+          ) : activeNav === 'analytics' ? (
+            /* Dedicated Phase 7 Analytics & Weekly Review Module */
+            <AnalyticsModule />
+          ) : activeNav === 'settings' ? (
+            /* Dedicated Phase 7 Settings & Preferences Module */
+            <SettingsModule
+              theme={theme}
+              onToggleTheme={handleToggleTheme}
+              user={user}
+              onUpdateUser={updateUser}
+              onLogout={logout}
             />
           ) : (
             /* Informative Module Placeholder View */
@@ -577,21 +921,44 @@ function MainAppContent() {
         </main>
       </div>
 
-      {/* Floating Focus Timer Banner (When session is active) */}
-      {activeTask && (
+      {/* Floating Focus Timer Banner or Break Banner */}
+      {(activeTask || breakTimer.isActive) && (
         <ActiveTimerBanner
           task={activeTask}
           elapsedSeconds={timerSeconds}
           accumulatedSeconds={activeSession?.accumulatedFocusSeconds || 0}
-          isPaused={isTimerPaused}
+          targetFocusSeconds={targetFocusSeconds}
+          isPaused={breakTimer.isActive ? breakTimer.isPaused : isTimerPaused}
           isMutating={isTimerMutating}
           errorMessage={timerError}
+          isBreakMode={breakTimer.isActive}
+          breakTotalSeconds={breakTimer.totalSeconds}
+          breakElapsedSeconds={breakTimer.elapsedSeconds}
+          breakTaskTitle={breakTimer.taskTitle}
+          onToggleBreakPause={handleToggleBreakPause}
+          onSkipBreak={handleSkipBreak}
           onClearError={() => setTimerError(null)}
           onTogglePause={handleToggleTimerPause}
           onFinishSession={handleFinishSession}
           onDiscardSession={handleDiscardSession}
         />
       )}
+
+      {/* Visual Completion & Alarm Dialog */}
+      <TimerAlarmModal
+        isOpen={alarmModal.isOpen}
+        alarmType={alarmModal.alarmType}
+        taskTitle={alarmModal.taskTitle}
+        durationFormatted={alarmModal.durationFormatted}
+        ringtoneName={alarmModal.ringtoneName}
+        isPlayingSound={alarmModal.isPlayingSound}
+        isMuted={alarmModal.isMuted}
+        defaultBreakDurationMinutes={user?.preferences?.workingHours?.defaultBreakDurationMinutes || 5}
+        onStopSound={handleStopAlarmSound}
+        onDismiss={handleDismissAlarm}
+        onStartBreak={handleStartBreakFromAlarm}
+        onResumeFocus={handleResumeFocusFromAlarm}
+      />
 
       {/* Floating Error Toast if Timer Fails to Start */}
       {timerError && !activeTask && (

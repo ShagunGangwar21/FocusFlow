@@ -477,6 +477,11 @@ async function completeTask(userId, taskId, completeData = {}) {
         }),
     ]);
 
+    try {
+        const { evaluateUserAchievements } = require('../achievements/achievements.service');
+        evaluateUserAchievements(userId).catch(() => {});
+    } catch (_) {}
+
     return updatedTask;
 }
 

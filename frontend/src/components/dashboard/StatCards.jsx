@@ -5,8 +5,9 @@ import {
   IconFlame,
   IconShieldCheck
 } from '../common/Icons';
+import { getLocalDateKey } from '../calendar/CalendarModule';
 
-export default function StatCards({ tasks = [], activeFocusSeconds = 0 }) {
+export default function StatCards({ tasks = [], activeFocusSeconds = 0, streakData = null, analyticsData = null }) {
   const totalCount = tasks.length;
   const completedTasks = useMemo(
     () => tasks.filter((t) => t.status === 'COMPLETED'),
@@ -47,17 +48,21 @@ export default function StatCards({ tasks = [], activeFocusSeconds = 0 }) {
     ? Math.min(100, Math.round((completedMinutes / plannedMinutes) * 100))
     : 0;
 
-  // 2. Real Flow Streak Calculation (Consecutive calendar days with at least 1 completed task)
+  // 2. Real Flow Streak Calculation (Use server-authoritative streak if provided, fallback to client calculation)
   const streakDays = useMemo(() => {
+    if (streakData && typeof streakData.currentStreakDays === 'number') {
+      return streakData.currentStreakDays;
+    }
+
     const tasksWithCompletedDate = completedTasks.filter((t) => t.completedAt);
     if (tasksWithCompletedDate.length === 0) return 0;
 
     const completedDateSet = new Set(
-      tasksWithCompletedDate.map((t) => new Date(t.completedAt).toISOString().split('T')[0])
+      tasksWithCompletedDate.map((t) => getLocalDateKey(t.completedAt))
     );
 
     const today = new Date();
-    const todayStr = today.toISOString().split('T')[0];
+    const todayStr = getLocalDateKey(today);
     let checkDate = new Date(today);
 
     // If no task completed today, check if yesterday was completed to keep current streak alive
@@ -66,13 +71,13 @@ export default function StatCards({ tasks = [], activeFocusSeconds = 0 }) {
     }
 
     let streak = 0;
-    while (completedDateSet.has(checkDate.toISOString().split('T')[0])) {
+    while (completedDateSet.has(getLocalDateKey(checkDate))) {
       streak += 1;
       checkDate.setDate(checkDate.getDate() - 1);
     }
 
     return streak;
-  }, [completedTasks]);
+  }, [completedTasks, streakData]);
 
   // 3. Real Recovery Buffer Calculation (Aggregated from user's flexible tasks)
   const flexibleTasks = useMemo(

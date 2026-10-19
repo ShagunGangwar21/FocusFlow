@@ -22,18 +22,36 @@ import {
 } from '../../api/scheduling';
 import ScheduleRecoveryModal from './ScheduleRecoveryModal';
 
+export function getLocalDateKey(dateInput) {
+  if (!dateInput) return '';
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export default function CalendarModule({
   onStartFocus,
   onEditTask,
   onOpenQuickAdd,
   onTasksChanged,
   activeSession = null,
+  initialDate = null,
+  tasksVersion = 0,
 }) {
   const [viewMode, setViewMode] = useState('WEEK'); // 'DAY' | 'WEEK' | 'MONTH'
-  const [currentDate, setCurrentDate] = useState(new Date());
+  const [currentDate, setCurrentDate] = useState(() => (initialDate ? new Date(initialDate) : new Date()));
   const [calendarData, setCalendarData] = useState({ tasks: [], conflicts: [], summary: {} });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (initialDate) {
+      setCurrentDate(new Date(initialDate));
+    }
+  }, [initialDate]);
 
   // Recovery Proposal Modal State
   const [activeProposal, setActiveProposal] = useState(null);
@@ -102,7 +120,7 @@ export default function CalendarModule({
 
   useEffect(() => {
     loadCalendar();
-  }, [loadCalendar]);
+  }, [loadCalendar, tasksVersion]);
 
   // Navigation handlers
   const handlePrev = () => {
@@ -152,7 +170,7 @@ export default function CalendarModule({
     setIsGeneratingProposal(true);
     setProposalError(null);
     try {
-      const dateStr = currentDate.toISOString().split('T')[0];
+      const dateStr = getLocalDateKey(currentDate);
       const conflictTaskIds = calendarData.conflicts.flatMap((c) => c.taskIds || (c.taskId ? [c.taskId] : []));
       const proposal = await createScheduleProposal({
         date: dateStr,
@@ -193,12 +211,13 @@ export default function CalendarModule({
     setActiveProposal(null);
   };
 
-  // Group tasks by Date string (YYYY-MM-DD)
+  // Group tasks by Date string (YYYY-MM-DD) using local date key
   const tasksByDate = useMemo(() => {
     const map = {};
     (calendarData.tasks || []).forEach((task) => {
-      if (!task.startAt) return;
-      const dateKey = new Date(task.startAt).toISOString().split('T')[0];
+      const targetTime = task.startAt || task.deadlineAt;
+      if (!targetTime) return;
+      const dateKey = getLocalDateKey(targetTime);
       if (!map[dateKey]) map[dateKey] = [];
       map[dateKey].push(task);
     });
@@ -222,7 +241,9 @@ export default function CalendarModule({
                 {headerTitle}
               </h2>
               <p className="text-xs text-[var(--text-dim)]">
-                {calendarData.summary?.totalTasks || 0} scheduled tasks • {calendarData.summary?.conflictCount || 0} conflicts
+                {viewMode === 'DAY'
+                  ? `${((calendarData.tasks || []).filter(t => !t.startAt && !t.deadlineAt ? true : getLocalDateKey(t.startAt || t.deadlineAt) === getLocalDateKey(currentDate))).length} scheduled tasks`
+                  : `${calendarData.tasks?.length || 0} scheduled tasks`} • {calendarData.summary?.conflictCount || 0} conflicts
               </p>
             </div>
           </div>
@@ -355,8 +376,8 @@ export default function CalendarModule({
           {[0, 1, 2, 3, 4, 5, 6].map((dayOffset) => {
             const colDate = new Date(fromDate);
             colDate.setDate(fromDate.getDate() + dayOffset);
-            const dateKey = colDate.toISOString().split('T')[0];
-            const isToday = new Date().toISOString().split('T')[0] === dateKey;
+            const dateKey = getLocalDateKey(colDate);
+            const isToday = getLocalDateKey(new Date()) === dateKey;
             const dayTasks = tasksByDate[dateKey] || [];
 
             return (
@@ -368,8 +389,15 @@ export default function CalendarModule({
                     : 'bg-[var(--bg-card)] border-[var(--border-subtle)]'
                 }`}
               >
-                {/* Column Day Header */}
-                <div className="flex items-center justify-between pb-2 mb-2 border-b border-[var(--border-subtle)]">
+                {/* Column Day Header - clickable to navigate to Day View */}
+                <div
+                  onClick={() => {
+                    setCurrentDate(new Date(colDate));
+                    setViewMode('DAY');
+                  }}
+                  className="flex items-center justify-between pb-2 mb-2 border-b border-[var(--border-subtle)] cursor-pointer hover:bg-[var(--bg-subtle)]/50 rounded p-1 -m-1 transition-colors"
+                  title="Click to view full day timeline"
+                >
                   <div>
                     <span className="text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] block">
                       {colDate.toLocaleDateString('en-US', { weekday: 'short' })}
@@ -411,24 +439,34 @@ export default function CalendarModule({
         /* DAY VIEW (Time-Slot Detailed Timeline) */
         <div className="p-5 rounded-2xl bg-[var(--bg-card)] border border-[var(--border-subtle)] shadow-xs">
           <div className="space-y-3">
-            {calendarData.tasks.length === 0 ? (
-              <div className="py-16 text-center">
-                <div className="w-10 h-10 mx-auto rounded-full bg-[var(--bg-subtle)] flex items-center justify-center text-[var(--text-dim)] mb-2">
-                  <IconCalendar className="w-5 h-5" />
-                </div>
-                <h3 className="text-sm font-semibold text-[var(--text-main)]">No tasks scheduled for this day</h3>
-                <p className="text-xs text-[var(--text-dim)] mt-0.5">Use "New Task" to schedule focused work or fixed appointments.</p>
-                <button
-                  type="button"
-                  onClick={onOpenQuickAdd}
-                  className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] hover:underline cursor-pointer"
-                >
-                  <IconPlus className="w-3.5 h-3.5" />
-                  <span>Add task for today</span>
-                </button>
-              </div>
-            ) : (
-              calendarData.tasks.map((task) => (
+            {(() => {
+              const currentDayKey = getLocalDateKey(currentDate);
+              const dayTasks = (calendarData.tasks || []).filter((t) => {
+                if (!t.startAt && !t.deadlineAt) return true;
+                return getLocalDateKey(t.startAt || t.deadlineAt) === currentDayKey;
+              });
+
+              if (dayTasks.length === 0) {
+                return (
+                  <div className="py-16 text-center">
+                    <div className="w-10 h-10 mx-auto rounded-full bg-[var(--bg-subtle)] flex items-center justify-center text-[var(--text-dim)] mb-2">
+                      <IconCalendar className="w-5 h-5" />
+                    </div>
+                    <h3 className="text-sm font-semibold text-[var(--text-main)]">No tasks scheduled for this day</h3>
+                    <p className="text-xs text-[var(--text-dim)] mt-0.5">Use "New Task" to schedule focused work or fixed appointments.</p>
+                    <button
+                      type="button"
+                      onClick={onOpenQuickAdd}
+                      className="inline-flex items-center gap-1.5 mt-3 px-3 py-1.5 text-xs font-semibold text-[var(--accent)] hover:underline cursor-pointer"
+                    >
+                      <IconPlus className="w-3.5 h-3.5" />
+                      <span>Add task for today</span>
+                    </button>
+                  </div>
+                );
+              }
+
+              return dayTasks.map((task) => (
                 <div
                   key={task.id}
                   className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-[var(--bg-subtle)]/70 border border-[var(--border-subtle)] hover:border-[var(--accent)]/40 transition-all"
@@ -499,8 +537,8 @@ export default function CalendarModule({
                     )}
                   </div>
                 </div>
-              ))
-            )}
+              ));
+            })()}
           </div>
         </div>
       ) : (
@@ -517,11 +555,11 @@ export default function CalendarModule({
 
           {/* Month Day Cells */}
           <div className="grid grid-cols-7 gap-1 pt-2">
-            {Array.from({ length: 35 }).map((_, i) => {
+            {Array.from({ length: Math.max(35, Math.round((toDate - fromDate) / 86400000) + 1) }).map((_, i) => {
               const cellDate = new Date(fromDate);
               cellDate.setDate(fromDate.getDate() + i);
-              const dateKey = cellDate.toISOString().split('T')[0];
-              const isToday = new Date().toISOString().split('T')[0] === dateKey;
+              const dateKey = getLocalDateKey(cellDate);
+              const isToday = getLocalDateKey(new Date()) === dateKey;
               const isCurrentMonth = cellDate.getMonth() === currentDate.getMonth();
               const dayTasks = tasksByDate[dateKey] || [];
 

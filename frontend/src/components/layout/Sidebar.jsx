@@ -15,7 +15,7 @@ import {
 
 export const NAV_ITEMS = [
   { id: 'overview', label: 'Overview', icon: IconLayoutDashboard },
-  { id: 'tasks', label: 'Tasks', icon: IconCheckSquare, badge: '5' },
+  { id: 'tasks', label: 'Tasks', icon: IconCheckSquare },
   { id: 'calendar', label: 'Calendar', icon: IconCalendar },
   { id: 'focus', label: 'Focus', icon: IconClock, badge: 'Active' },
   { id: 'analytics', label: 'Analytics', icon: IconBarChart3 },
@@ -30,8 +30,23 @@ export default function Sidebar({
   isCollapsed,
   onToggleCollapse,
   isMobileOpen,
-  onCloseMobile
+  onCloseMobile,
+  taskCount,
+  tasks,
 }) {
+  const effectiveTaskCount = taskCount !== undefined
+    ? taskCount
+    : (Array.isArray(tasks) ? tasks.length : undefined);
+
+  const navItems = NAV_ITEMS.map((item) => {
+    if (item.id === 'tasks') {
+      return {
+        ...item,
+        badge: effectiveTaskCount !== undefined ? String(effectiveTaskCount) : undefined,
+      };
+    }
+    return item;
+  });
   return (
     <>
       {/* Mobile Backdrop */}
@@ -83,7 +98,7 @@ export default function Sidebar({
 
         {/* Navigation List */}
         <nav className="flex-1 px-3 py-4 space-y-1.5 overflow-y-auto" aria-label="Main Navigation">
-          {NAV_ITEMS.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeNav === item.id;
 
@@ -119,8 +134,10 @@ export default function Sidebar({
                   </span>
                 )}
 
-                {!isCollapsed && item.badge && (
+                {!isCollapsed && (item.badge !== undefined && item.badge !== null && item.badge !== '') && (
                   <span
+                    id={item.id === 'tasks' ? 'sidebar-tasks-badge' : undefined}
+                    data-testid={item.id === 'tasks' ? 'sidebar-tasks-badge' : undefined}
                     className={`ml-auto px-2 py-0.5 text-[11px] font-semibold rounded-full ${
                       item.badge === 'Active'
                         ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
