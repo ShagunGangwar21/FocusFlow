@@ -1,0 +1,8 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/:path*",
+      "destination": "https://focusflow-backend-w3ri.onrender.com/api/:path*"
+    }
+  ]
+}
